@@ -1,0 +1,7 @@
+confluent-kafka
+pandas
+sqlalchemy
+pg8000
+streamlit
+plotly
+requests
