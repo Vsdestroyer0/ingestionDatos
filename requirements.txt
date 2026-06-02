@@ -1,7 +1,30 @@
-confluent-kafka
-pandas
-sqlalchemy
-pg8000
-streamlit
-plotly
-requests
+# ─── Steam Analytics | Python dependencies ───────────────────────────────────
+#
+# Instalar con:
+#   uv pip install -r requirements.txt --python .venv/bin/python
+# o bien:
+#   pip install -r requirements.txt
+#
+# Nota: psycopg2-binary requiere libpq-devel en el sistema. Si tu entorno
+# es Python ≥ 3.14 y falla la compilación, sustituye por pg8000 (puro Python).
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+confluent-kafka>=2.3.0
+
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+sqlalchemy>=2.0.0
+pg8000>=1.31.0          # driver puro Python (compatible con Python 3.14+)
+# psycopg2-binary>=2.9  # alternativa si pg8000 no es opción
+
+# ── HTTP / API ────────────────────────────────────────────────────────────────
+requests>=2.31.0
+
+# ── Data processing ───────────────────────────────────────────────────────────
+pandas>=2.0.0
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+streamlit>=1.32.0
+plotly>=5.20.0
+
+# ── Utilidades ────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0    # para leer variables de entorno desde .env (opcional)

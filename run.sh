@@ -21,10 +21,12 @@ show_usage() {
     echo ""
     echo "Opciones:"
     echo "  init      Inicializa el esquema de la base de datos (crea tablas)"
-    echo "  producer  Arranca el productor de eventos Kafka (ingesta Steam API)"
-    echo "  consumer  Arranca el consumidor de eventos Kafka (carga a Postgres)"
-    echo "  dashboard Arranca el panel analitico interactivo de Streamlit"
-    echo "  services  Inicia los contenedores de Docker (Postgres y Kafka)"
+    echo "  stream    Arranca el productor de streaming Kafka (ingesta/ingest_stream.py)"
+    echo "  producer  Alias de 'stream'"
+    echo "  consumer  Arranca el consumidor Kafka → PostgreSQL"
+    echo "  batch     Ejecuta la ingesta batch de dimensiones (ingesta/ingest_batch.py)"
+    echo "  dashboard Arranca el panel analítico de Streamlit"
+    echo "  services  Inicia los contenedores (Postgres y Kafka)"
     echo "  help      Muestra esta ayuda"
 }
 
@@ -33,13 +35,17 @@ case "$1" in
         print_blue "Inicializando base de datos PostgreSQL..."
         $VENV_PYTHON "$DIR/init_db.py"
         ;;
-    producer)
-        print_blue "Arrancando productor de eventos Kafka (Steam API)..."
-        $VENV_PYTHON "$DIR/producer.py"
+    stream|producer)
+        print_blue "Arrancando productor Kafka (Steam API → Kafka)..."
+        $VENV_PYTHON "$DIR/ingesta/ingest_stream.py"
         ;;
     consumer)
-        print_blue "Arrancando consumidor de eventos Kafka (Procesamiento y Carga)..."
+        print_blue "Arrancando consumidor Kafka (Kafka → PostgreSQL)..."
         $VENV_PYTHON "$DIR/consumer.py"
+        ;;
+    batch)
+        print_blue "Arrancando ingesta batch (SteamSpy → PostgreSQL)..."
+        $VENV_PYTHON "$DIR/ingesta/ingest_batch.py"
         ;;
     dashboard)
         print_blue "Arrancando Dashboard de Streamlit..."
