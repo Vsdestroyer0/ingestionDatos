@@ -197,6 +197,58 @@ def get_genre_hierarchy(df_filtered: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def get_genre_hierarchy_json(file_path: str, df_filtered: pd.DataFrame) -> pd.DataFrame:
+    """
+    Dynamically loads tags from a daily JSON snapshot (in data/batch/DD-MM-YY.json)
+    and constructs a clean 3-level hierarchy identical to the database hierarchy:
+        Level 1 (genero): Primary genre (first tag in the JSON list)
+        Level 2 (subgenero): Subgenres (remaining tags)
+        Level 3 (detalle): Game title
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        st.error(f"Error cargando archivo histórico JSON: {e}")
+        return pd.DataFrame()
+
+    # Map game titles and ids from the filtered dataset
+    game_ids = set(df_filtered['game_id'].unique().tolist()) if not df_filtered.empty else set()
+
+    rows = []
+    for item in data:
+        gid = item.get('game_id')
+        # If filtering is active, only include games in the current selection
+        if game_ids and gid not in game_ids:
+            continue
+
+        title = item.get('title', f"AppID {gid}")
+        tags = item.get('tags', [])
+        if not tags:
+            continue
+
+        # Level 1: Primary tags (first tag)
+        primaries = [tags[0]]
+
+        # Level 2: Secondary tags (all subsequent tags)
+        secondaries = tags[1:]
+        if not secondaries:
+            secondaries = primaries  # Fallback
+
+        for p in primaries:
+            for s in secondaries:
+                sub_label = s if s != p else f"{s} Sub"
+                rows.append({
+                    'genero': p,
+                    'subgenero': sub_label,
+                    'detalle': title,
+                    'count': 1
+                })
+
+    return pd.DataFrame(rows)
+
+
+
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 st.markdown('<div class="main-title">Steamspy Analytics</div>', unsafe_allow_html=True)
@@ -254,21 +306,43 @@ with tab1:
         st.markdown("### Filtros de Análisis")
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            selected_games = st.multiselect(
-                "Seleccionar Juegos (deja vacío para mostrar todos):",
-                options=df_hist['title'].unique(),
-                default=[]
-            )
-        with col_f2:
             date_range = st.date_input(
                 "Rango de Fechas:",
                 value=(df_hist['full_date'].min().date(), df_hist['full_date'].max().date())
             )
+        with col_f2:
+            import os
+            from datetime import datetime
+            os.makedirs("data/batch", exist_ok=True)
+            all_files = [f for f in os.listdir("data/batch") if f.endswith(".json")]
+            
+            # Parse files to date objects
+            valid_files = []
+            for f in all_files:
+                try:
+                    date_part = f.replace(".json", "")
+                    file_date = datetime.strptime(date_part, "%d-%m-%y").date()
+                    valid_files.append((f, file_date))
+                except ValueError:
+                    continue
+            
+            # Filter by selected date range
+            if len(date_range) == 2:
+                s, e = date_range
+                valid_files = [vf for vf in valid_files if s <= vf[1] <= e]
+            
+            # Sort descending by date
+            valid_files = sorted(valid_files, key=lambda x: x[1], reverse=True)
+            json_files = [vf[0] for vf in valid_files]
+            
+            options_source = ["Base de Datos (Actual)"] + [f.replace(".json", "") for f in json_files]
+            selected_source = st.selectbox(
+                "Origen de Géneros (Batch):",
+                options_source
+            )
 
-        # Apply game filter: empty selection means all games
-        filtered_df = df_hist[df_hist['title'].isin(selected_games)] if selected_games else df_hist.copy()
-
-        # Apply date filter
+        # Apply date filter directly on df_hist
+        filtered_df = df_hist.copy()
         if not filtered_df.empty and len(date_range) == 2:
             s, e = date_range
             filtered_df = filtered_df[
@@ -279,49 +353,14 @@ with tab1:
         if filtered_df.empty:
             st.warning("No hay datos para los filtros seleccionados.")
         else:
-            # ── Chart 2: Real Top-10 — queried from fact_players globally ──────
-            # Independent of the game-selection filter so it always shows the
-            # actual 10 highest-CCU games tracked by the streaming consumer.
-            st.markdown("### Top 10 Juegos con Más Jugadores (Streaming)")
-            try:
-                df_top10 = pd.read_sql("""
-                    SELECT g.title, AVG(f.ccu) AS avg_ccu, MAX(f.ccu) AS peak_ccu
-                    FROM   fact_players f
-                    JOIN   dim_games g ON g.game_id = f.game_id
-                    GROUP  BY g.title
-                    ORDER  BY avg_ccu DESC
-                    LIMIT  10
-                """, con=engine)
-            except Exception as e:
-                df_top10 = pd.DataFrame()
-                st.error(f"Error cargando Top 10: {e}")
-
-            if not df_top10.empty:
-                fig_bar = px.bar(
-                    df_top10, x='avg_ccu', y='title', orientation='h', color='title',
-                    labels={"avg_ccu": "Promedio CCU", "title": "Juego"},
-                    color_discrete_sequence=px.colors.qualitative.Plotly,
-                    height=max(300, len(df_top10) * 38),
-                    custom_data=['peak_ccu'],
-                )
-                fig_bar.update_traces(
-                    hovertemplate="<b>%{y}</b><br>Promedio CCU: %{x:,.0f}<br>Pico CCU: %{customdata[0]:,.0f}<extra></extra>"
-                )
-                fig_bar.update_layout(
-                    **_CHART_BG,
-                    showlegend=False,
-                    xaxis=_GRID,
-                    yaxis=dict(gridcolor='rgba(0,0,0,0)', categoryorder='total ascending'),
-                    margin=dict(l=0, r=0, t=20, b=0),
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            st.markdown("---")
-
             # ── Chart 3: Genre and Subgenre distribution ──────────────────────
             st.markdown("### Participación y Distribución de Géneros")
 
-            df_hier = get_genre_hierarchy(filtered_df)
+            if selected_source == "Base de Datos (Actual)":
+                df_hier = get_genre_hierarchy(filtered_df)
+            else:
+                file_path = f"data/batch/{selected_source}.json"
+                df_hier = get_genre_hierarchy_json(file_path, filtered_df)
 
             if df_hier.empty:
                 st.info("No hay datos de géneros/etiquetas para el conjunto de filtros actual.")
@@ -475,173 +514,118 @@ with tab1:
                         st.plotly_chart(fig_sun, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Real-Time Kafka Stream
-# ══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.subheader("Monitoreo en Tiempo Real (Kafka Stream)")
+    st.subheader("Panel de Control de Ingestión y Monitoreo (Kafka)")
 
-    col_ctrl, col_desc = st.columns([1, 3])
-    with col_ctrl:
-        live_active   = st.checkbox("Activar Consumidor Kafka en Vivo", value=False)
+    # Initialize background processes if not exist
+    if 'producer_proc' not in st.session_state:
+        st.session_state.producer_proc = None
+    if 'consumer_proc' not in st.session_state:
+        st.session_state.consumer_proc = None
+
+    # Check status
+    prod_active = st.session_state.producer_proc is not None and st.session_state.producer_proc.poll() is None
+    cons_active = st.session_state.consumer_proc is not None and st.session_state.consumer_proc.poll() is None
+
+    st.markdown("### Control del Pipeline de Streaming")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.markdown("""
+        <div class="metric-card" style="border-left: 5px solid #00f2fe; padding: 1rem 1.5rem;">
+            <div class="metric-title">Productor (ingest_stream.py)</div>
+            <div style="font-size:0.85rem; color:#8f9cae; margin-top:0.3rem;">
+                Obtiene CCU en tiempo real de Steam API y publica en Kafka.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.write("")
-        st.markdown("**Configuración:**")
-        bootstrap_srv = st.text_input("Kafka Broker", KAFKA_BOOTSTRAP_SERVERS)
-        topic_name    = st.text_input("Kafka Topic", KAFKA_TOPIC)
-
-    with col_desc:
-        st.markdown(f"""
-        ### Canal en Vivo
-        Cuando el interruptor de la izquierda está **activo**, Streamlit se conectará al Broker
-        de Kafka en `{bootstrap_srv}` y escuchará eventos en el tópico `{topic_name}`.
-
-        - Se graficarán los datos conforme lleguen en tiempo real.
-        - Las tarjetas de métricas se actualizarán instantáneamente.
-        """)
-        if live_active:
-            st.markdown(
-                '<div style="display:flex;align-items:center;">'
-                '<span class="live-pulse"></span>'
-                '<span style="color:#00e676;font-weight:bold;">Escuchando eventos en tiempo real de Kafka...</span>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
+        
+        if prod_active:
+            st.success("🟢 Productor de Kafka Activo")
+            if st.button("Detener Productor", key="stop_producer_btn", use_container_width=True):
+                st.session_state.producer_proc.terminate()
+                st.session_state.producer_proc = None
+                st.rerun()
         else:
-            st.markdown('<div style="color:#ff1744;font-weight:bold;">Consumidor inactivo.</div>', unsafe_allow_html=True)
+            st.warning("🔴 Productor de Kafka Inactivo")
+            if st.button("Iniciar Productor", key="start_producer_btn", use_container_width=True):
+                import sys
+                import subprocess
+                try:
+                    st.session_state.producer_proc = subprocess.Popen([sys.executable, "ingesta/ingest_stream.py"])
+                    st.success("¡Productor iniciado en segundo plano!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al iniciar productor: {e}")
 
-    st.write("")
+   # Consumidor de Postgres
+    with col_p2:
+        st.markdown("""
+        <div class="metric-card" style="border-left: 5px solid #00e676; padding: 1rem 1.5rem;">
+            <div class="metric-title">Consumidor BD (consumer.py)</div>
+            <div style="font-size:0.85rem; color:#8f9cae; margin-top:0.3rem;">
+                Lee eventos de Kafka y los persiste en PostgreSQL (fact_players).
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.write("")
 
-    live_metrics_ph = st.empty()
-    live_chart_ph   = st.empty()
+        if cons_active:
+            st.success("🟢 Consumidor de Base de Datos Activo")
+            if st.button("Detener Consumidor", key="stop_consumer_btn", use_container_width=True):
+                st.session_state.consumer_proc.terminate()
+                st.session_state.consumer_proc = None
+                st.rerun()
+        else:
+            st.warning("🔴 Consumidor de Base de Datos Inactivo")
+            if st.button("Iniciar Consumidor", key="start_consumer_btn", use_container_width=True):
+                import sys
+                import subprocess
+                try:
+                    st.session_state.consumer_proc = subprocess.Popen([sys.executable, "consumer.py"])
+                    st.success("¡Consumidor iniciado en segundo plano!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al iniciar consumidor: {e}")
 
-    if live_active:
-        from confluent_kafka import Consumer
+    st.markdown("---")
+    st.markdown("### Top 10 Juegos con Más Jugadores (Streaming)")
+    try:
+        df_top10 = pd.read_sql("""
+            SELECT g.title, AVG(f.ccu) AS avg_ccu, MAX(f.ccu) AS peak_ccu
+            FROM   fact_players f
+            JOIN   dim_games g ON g.game_id = f.game_id
+            GROUP  BY g.title
+            ORDER  BY avg_ccu DESC
+            LIMIT  10
+        """, con=engine)
+    except Exception as e:
+        df_top10 = pd.DataFrame()
+        st.error(f"Error cargando Top 10: {e}")
 
-        conf = {
-            'bootstrap.servers': bootstrap_srv,
-            'group.id':          f"streamlit-live-{random.randint(1000, 9999)}",
-            'auto.offset.reset': 'latest',
-            'enable.auto.commit': False,
-        }
-        try:
-            kafka_consumer = Consumer(conf)
-            kafka_consumer.subscribe([topic_name])
-
-            for _ in range(60):
-                msg = kafka_consumer.poll(0.5)
-                if msg is not None and not msg.error():
-                    try:
-                        event       = json.loads(msg.value().decode('utf-8'))
-                        game_id     = event["game_id"]
-                        ccu         = event["ccu"]
-                        time_str    = datetime.fromisoformat(event["timestamp"]).strftime("%H:%M:%S")
-
-                        with engine.connect() as conn:
-                            res = conn.execute(
-                                text("SELECT title FROM dim_games WHERE game_id = :gid"),
-                                {"gid": game_id}
-                            ).fetchone()
-                            game_name = res[0] if res else f"AppID {game_id}"
-
-                        if game_name not in st.session_state.live_history:
-                            st.session_state.live_history[game_name] = []
-
-                        st.session_state.previous_ccu[game_name] = st.session_state.last_ccu.get(game_name, ccu)
-                        st.session_state.last_ccu[game_name] = ccu
-
-                        history = st.session_state.live_history[game_name]
-                        history.append((time_str, ccu))
-                        if len(history) > 30:
-                            history.pop(0)
-
-                    except Exception as parse_err:
-                        print(f"Kafka parse error: {parse_err}")
-
-                if st.session_state.last_ccu:
-                    with live_metrics_ph.container():
-                        st.markdown("#### Métricas Recientes")
-                        cols = st.columns(min(len(st.session_state.last_ccu), 4))
-                        for i, (g_name, curr_ccu) in enumerate(st.session_state.last_ccu.items()):
-                            prev  = st.session_state.previous_ccu.get(g_name, curr_ccu)
-                            diff  = curr_ccu - prev
-                            arrow = (f'<span class="delta-up">▲ +{diff:,}</span>' if diff > 0
-                                     else f'<span class="delta-down">▼ {diff:,}</span>' if diff < 0
-                                     else '<span style="color:#8f9cae;">■ Estable</span>')
-                            with cols[i % len(cols)]:
-                                st.markdown(f"""
-                                <div class="metric-card">
-                                    <div class="metric-title">{g_name}</div>
-                                    <div class="metric-value">{curr_ccu:,}</div>
-                                    <div class="metric-delta">Flujo en vivo: {arrow}</div>
-                                </div>""", unsafe_allow_html=True)
-
-                    with live_chart_ph.container():
-                        st.markdown("#### CCU en Tiempo Real (Últimos 30 eventos)")
-                        chart_rows = [
-                            {"Juego": g, "Hora": t, "Jugadores (CCU)": c}
-                            for g, pts in st.session_state.live_history.items()
-                            for t, c in pts
-                        ]
-                        if chart_rows:
-                            fig_live = px.line(
-                                pd.DataFrame(chart_rows),
-                                x="Hora", y="Jugadores (CCU)", color="Juego",
-                                title="CCU en vivo — Kafka stream",
-                                markers=True,
-                                color_discrete_sequence=px.colors.qualitative.Safe,
-                            )
-                            fig_live.update_layout(
-                                **_CHART_BG,
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                xaxis=_GRID, yaxis=_GRID,
-                                margin=dict(l=0, r=0, t=50, b=0),
-                            )
-                            st.plotly_chart(fig_live, use_container_width=True)
-
-                time.sleep(0.5)
-
-            st.rerun()
-
-        except Exception as conn_err:
-            st.error(f"Error de conexión a Kafka: {conn_err}")
-        finally:
-            try:
-                kafka_consumer.close()
-            except Exception:
-                pass
-
+    if not df_top10.empty:
+        fig_bar = px.bar(
+            df_top10, x='avg_ccu', y='title', orientation='h', color='title',
+            labels={"avg_ccu": "Promedio CCU", "title": "Juego"},
+            color_discrete_sequence=px.colors.qualitative.Plotly,
+            height=max(300, len(df_top10) * 38),
+            custom_data=['peak_ccu'],
+        )
+        fig_bar.update_traces(
+            hovertemplate="<b>%{y}</b><br>Promedio CCU: %{x:,.0f}<br>Pico CCU: %{customdata[0]:,.0f}<extra></extra>"
+        )
+        fig_bar.update_layout(
+            **_CHART_BG,
+            showlegend=False,
+            xaxis=_GRID,
+            yaxis=dict(gridcolor='rgba(0,0,0,0)', categoryorder='total ascending'),
+            margin=dict(l=0, r=0, t=20, b=0),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
     else:
-        if st.session_state.last_ccu:
-            st.info("Mostrando los últimos datos guardados antes de desactivar el Stream en vivo.")
-            cols = st.columns(min(len(st.session_state.last_ccu), 4))
-            for i, (g_name, curr_ccu) in enumerate(st.session_state.last_ccu.items()):
-                with cols[i % len(cols)]:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-title">{g_name}</div>
-                        <div class="metric-value">{curr_ccu:,}</div>
-                        <div class="metric-delta"><span style="color:#8f9cae;">■ Detenido</span></div>
-                    </div>""", unsafe_allow_html=True)
+        st.info("No hay datos de streaming guardados en `fact_players` todavía. Inicia el Productor y Consumidor para registrar datos.")
 
-            chart_rows = [
-                {"Juego": g, "Hora": t, "Jugadores (CCU)": c}
-                for g, pts in st.session_state.live_history.items()
-                for t, c in pts
-            ]
-            if chart_rows:
-                fig_live = px.line(
-                    pd.DataFrame(chart_rows),
-                    x="Hora", y="Jugadores (CCU)", color="Juego",
-                    markers=True,
-                    color_discrete_sequence=px.colors.qualitative.Safe,
-                )
-                fig_live.update_layout(
-                    **_CHART_BG,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    xaxis=_GRID, yaxis=_GRID,
-                )
-                st.plotly_chart(fig_live, use_container_width=True)
-        else:
-            st.info("Activa el Consumidor de Kafka en Vivo para ver datos y gráficos en tiempo real.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — Database Explorer
