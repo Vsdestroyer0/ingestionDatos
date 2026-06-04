@@ -589,30 +589,38 @@ with tab2:
     
     @st.fragment(run_every="5s")
     def render_streaming_chart():
-        st.markdown("### Top 10 Juegos con Más Jugadores (Streaming en Vivo)")
+        st.markdown("### Top 15 Juegos con Más Jugadores (Streaming en Vivo)")
         try:
-            df_top10 = pd.read_sql("""
-                SELECT g.title, AVG(f.ccu) AS avg_ccu, MAX(f.ccu) AS peak_ccu
-                FROM   fact_players f
-                JOIN   dim_games g ON g.game_id = f.game_id
-                GROUP  BY g.title
-                ORDER  BY avg_ccu DESC
-                LIMIT  10
+            df_top15 = pd.read_sql("""
+                WITH RankedPlayers AS (
+                    SELECT 
+                        g.title, 
+                        f.ccu,
+                        MAX(f.ccu) OVER (PARTITION BY f.game_id) as peak_ccu,
+                        ROW_NUMBER() OVER (PARTITION BY f.game_id ORDER BY f.time_id DESC) as rn
+                    FROM fact_players f
+                    JOIN dim_games g ON g.game_id = f.game_id
+                )
+                SELECT title, ccu AS current_ccu, peak_ccu
+                FROM RankedPlayers
+                WHERE rn = 1
+                ORDER BY current_ccu DESC
+                LIMIT 15
             """, con=engine)
         except Exception as e:
-            df_top10 = pd.DataFrame()
-            st.error(f"Error cargando Top 10: {e}")
+            df_top15 = pd.DataFrame()
+            st.error(f"Error cargando Top 15: {e}")
 
-        if not df_top10.empty:
+        if not df_top15.empty:
             fig_bar = px.bar(
-                df_top10, x='avg_ccu', y='title', orientation='h', color='title',
-                labels={"avg_ccu": "Promedio CCU", "title": "Juego"},
+                df_top15, x='current_ccu', y='title', orientation='h', color='title',
+                labels={"current_ccu": "Jugadores Actuales", "title": "Juego"},
                 color_discrete_sequence=px.colors.qualitative.Plotly,
-                height=max(300, len(df_top10) * 38),
+                height=max(350, len(df_top15) * 38),
                 custom_data=['peak_ccu'],
             )
             fig_bar.update_traces(
-                hovertemplate="<b>%{y}</b><br>Promedio CCU: %{x:,.0f}<br>Pico CCU: %{customdata[0]:,.0f}<extra></extra>"
+                hovertemplate="<b>%{y}</b><br>Actual: %{x:,.0f}<br>Pico Histórico: %{customdata[0]:,.0f}<extra></extra>"
             )
             fig_bar.update_layout(
                 **_CHART_BG,

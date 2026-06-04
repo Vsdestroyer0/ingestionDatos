@@ -106,8 +106,20 @@ def process_event(payload: dict) -> None:
     game_id = int(payload["game_id"])
     ccu     = int(payload["ccu"])
     dt      = datetime.fromisoformat(payload["timestamp"])
+    title   = payload.get("title")
 
     with engine.begin() as conn:                    # transacción atómica
+        # Upsert dinámico del título en dim_games si viene en el payload
+        if title:
+            conn.execute(
+                text("""
+                    INSERT INTO dim_games (game_id, title) 
+                    VALUES (:gid, :title)
+                    ON CONFLICT (game_id) DO NOTHING
+                """),
+                {"gid": game_id, "title": title}
+            )
+            
         time_id = get_or_create_time_id(conn, dt)
         insert_fact(conn, game_id, time_id, ccu)
 
