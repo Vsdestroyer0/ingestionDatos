@@ -145,6 +145,19 @@ def get_genre_hierarchy(df_filtered: pd.DataFrame) -> pd.DataFrame:
     if not game_ids:
         return pd.DataFrame()
 
+    # Load global tag frequencies from PostgreSQL
+    query_freq = text("""
+        SELECT tag_name, COUNT(*) as freq
+        FROM   dim_game_tags
+        GROUP  BY tag_name
+    """)
+    try:
+        with engine.connect() as conn:
+            df_freq = pd.read_sql(query_freq, con=conn)
+            tag_freqs = dict(zip(df_freq['tag_name'], df_freq['freq']))
+    except Exception:
+        tag_freqs = {}
+
     # Load tags dynamically from PostgreSQL
     query_tags = text("""
         SELECT game_id, tag_name, tag_priority
@@ -187,11 +200,12 @@ def get_genre_hierarchy(df_filtered: pd.DataFrame) -> pd.DataFrame:
             for s in secondaries:
                 # Avoid parent-child name identity
                 sub_label = s if s != p else f"{s} Sub"
+                count_val = tag_freqs.get(s, 1)
                 rows.append({
                     'genero': p,
                     'subgenero': sub_label,
                     'detalle': title,
-                    'count': 1
+                    'count': count_val
                 })
 
     return pd.DataFrame(rows)
@@ -211,6 +225,12 @@ def get_genre_hierarchy_json(file_path: str, df_filtered: pd.DataFrame) -> pd.Da
     except Exception as e:
         st.error(f"Error cargando archivo histórico JSON: {e}")
         return pd.DataFrame()
+
+    # Pre-calculate global tag frequencies from this JSON snapshot
+    tag_freqs = {}
+    for item in data:
+        for t in item.get('tags', []):
+            tag_freqs[t] = tag_freqs.get(t, 0) + 1
 
     # Map game titles and ids from the filtered dataset
     game_ids = set(df_filtered['game_id'].unique().tolist()) if not df_filtered.empty else set()
@@ -238,11 +258,12 @@ def get_genre_hierarchy_json(file_path: str, df_filtered: pd.DataFrame) -> pd.Da
         for p in primaries:
             for s in secondaries:
                 sub_label = s if s != p else f"{s} Sub"
+                count_val = tag_freqs.get(s, 1)
                 rows.append({
                     'genero': p,
                     'subgenero': sub_label,
                     'detalle': title,
-                    'count': 1
+                    'count': count_val
                 })
 
     return pd.DataFrame(rows)
@@ -529,101 +550,82 @@ with tab2:
 
     st.markdown("### Control del Pipeline de Streaming")
     col_p1, col_p2 = st.columns(2)
+    
     with col_p1:
-        st.markdown("""
-        <div class="metric-card" style="border-left: 5px solid #00f2fe; padding: 1rem 1.5rem;">
-            <div class="metric-title">Productor (ingest_stream.py)</div>
-            <div style="font-size:0.85rem; color:#8f9cae; margin-top:0.3rem;">
-                Obtiene CCU en tiempo real de Steam API y publica en Kafka.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.write("")
+        st.info("Productor: Obtiene CCU en tiempo real de Steam API y publica en Kafka.")
+        prod_toggle = st.toggle("Activar Productor", value=prod_active, key="prod_toggle")
         
-        if prod_active:
-            st.success("🟢 Productor de Kafka Activo")
-            if st.button("Detener Productor", key="stop_producer_btn", use_container_width=True):
-                st.session_state.producer_proc.terminate()
-                st.session_state.producer_proc = None
+        if prod_toggle and not prod_active:
+            import sys
+            import subprocess
+            try:
+                st.session_state.producer_proc = subprocess.Popen([sys.executable, "ingesta/ingest_stream.py"])
                 st.rerun()
-        else:
-            st.warning("🔴 Productor de Kafka Inactivo")
-            if st.button("Iniciar Productor", key="start_producer_btn", use_container_width=True):
-                import sys
-                import subprocess
-                try:
-                    st.session_state.producer_proc = subprocess.Popen([sys.executable, "ingesta/ingest_stream.py"])
-                    st.success("¡Productor iniciado en segundo plano!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al iniciar productor: {e}")
-
-   # Consumidor de Postgres
+            except Exception as e:
+                st.error(f"Error al iniciar productor: {e}")
+        elif not prod_toggle and prod_active:
+            st.session_state.producer_proc.terminate()
+            st.session_state.producer_proc = None
+            st.rerun()
+            
     with col_p2:
-        st.markdown("""
-        <div class="metric-card" style="border-left: 5px solid #00e676; padding: 1rem 1.5rem;">
-            <div class="metric-title">Consumidor BD (consumer.py)</div>
-            <div style="font-size:0.85rem; color:#8f9cae; margin-top:0.3rem;">
-                Lee eventos de Kafka y los persiste en PostgreSQL (fact_players).
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.write("")
-
-        if cons_active:
-            st.success("🟢 Consumidor de Base de Datos Activo")
-            if st.button("Detener Consumidor", key="stop_consumer_btn", use_container_width=True):
-                st.session_state.consumer_proc.terminate()
-                st.session_state.consumer_proc = None
+        st.info("Consumidor: Lee eventos de Kafka y los persiste en PostgreSQL (fact_players).")
+        cons_toggle = st.toggle("Activar Consumidor", value=cons_active, key="cons_toggle")
+        
+        if cons_toggle and not cons_active:
+            import sys
+            import subprocess
+            try:
+                st.session_state.consumer_proc = subprocess.Popen([sys.executable, "consumer.py"])
                 st.rerun()
-        else:
-            st.warning("🔴 Consumidor de Base de Datos Inactivo")
-            if st.button("Iniciar Consumidor", key="start_consumer_btn", use_container_width=True):
-                import sys
-                import subprocess
-                try:
-                    st.session_state.consumer_proc = subprocess.Popen([sys.executable, "consumer.py"])
-                    st.success("¡Consumidor iniciado en segundo plano!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error al iniciar consumidor: {e}")
+            except Exception as e:
+                st.error(f"Error al iniciar consumidor: {e}")
+        elif not cons_toggle and cons_active:
+            st.session_state.consumer_proc.terminate()
+            st.session_state.consumer_proc = None
+            st.rerun()
 
     st.markdown("---")
-    st.markdown("### Top 10 Juegos con Más Jugadores (Streaming)")
-    try:
-        df_top10 = pd.read_sql("""
-            SELECT g.title, AVG(f.ccu) AS avg_ccu, MAX(f.ccu) AS peak_ccu
-            FROM   fact_players f
-            JOIN   dim_games g ON g.game_id = f.game_id
-            GROUP  BY g.title
-            ORDER  BY avg_ccu DESC
-            LIMIT  10
-        """, con=engine)
-    except Exception as e:
-        df_top10 = pd.DataFrame()
-        st.error(f"Error cargando Top 10: {e}")
+    
+    @st.fragment(run_every="5s")
+    def render_streaming_chart():
+        st.markdown("### Top 10 Juegos con Más Jugadores (Streaming en Vivo)")
+        try:
+            df_top10 = pd.read_sql("""
+                SELECT g.title, AVG(f.ccu) AS avg_ccu, MAX(f.ccu) AS peak_ccu
+                FROM   fact_players f
+                JOIN   dim_games g ON g.game_id = f.game_id
+                GROUP  BY g.title
+                ORDER  BY avg_ccu DESC
+                LIMIT  10
+            """, con=engine)
+        except Exception as e:
+            df_top10 = pd.DataFrame()
+            st.error(f"Error cargando Top 10: {e}")
 
-    if not df_top10.empty:
-        fig_bar = px.bar(
-            df_top10, x='avg_ccu', y='title', orientation='h', color='title',
-            labels={"avg_ccu": "Promedio CCU", "title": "Juego"},
-            color_discrete_sequence=px.colors.qualitative.Plotly,
-            height=max(300, len(df_top10) * 38),
-            custom_data=['peak_ccu'],
-        )
-        fig_bar.update_traces(
-            hovertemplate="<b>%{y}</b><br>Promedio CCU: %{x:,.0f}<br>Pico CCU: %{customdata[0]:,.0f}<extra></extra>"
-        )
-        fig_bar.update_layout(
-            **_CHART_BG,
-            showlegend=False,
-            xaxis=_GRID,
-            yaxis=dict(gridcolor='rgba(0,0,0,0)', categoryorder='total ascending'),
-            margin=dict(l=0, r=0, t=20, b=0),
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("No hay datos de streaming guardados en `fact_players` todavía. Inicia el Productor y Consumidor para registrar datos.")
+        if not df_top10.empty:
+            fig_bar = px.bar(
+                df_top10, x='avg_ccu', y='title', orientation='h', color='title',
+                labels={"avg_ccu": "Promedio CCU", "title": "Juego"},
+                color_discrete_sequence=px.colors.qualitative.Plotly,
+                height=max(300, len(df_top10) * 38),
+                custom_data=['peak_ccu'],
+            )
+            fig_bar.update_traces(
+                hovertemplate="<b>%{y}</b><br>Promedio CCU: %{x:,.0f}<br>Pico CCU: %{customdata[0]:,.0f}<extra></extra>"
+            )
+            fig_bar.update_layout(
+                **_CHART_BG,
+                showlegend=False,
+                xaxis=_GRID,
+                yaxis=dict(gridcolor='rgba(0,0,0,0)', categoryorder='total ascending'),
+                margin=dict(l=0, r=0, t=20, b=0),
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No hay datos de streaming guardados en `fact_players` todavía. Inicia el Productor y Consumidor para registrar datos.")
+
+    render_streaming_chart()
 
 
 

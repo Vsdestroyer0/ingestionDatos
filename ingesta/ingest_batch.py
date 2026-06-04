@@ -1,8 +1,7 @@
 import requests
 import json
-import psycopg2 # Librería para conectar a Postgres
+import psycopg2
 
-# Configuración de conexión (Ajusta si es necesario)
 conn = psycopg2.connect(
     dbname="steam_analytics", user="admin", password="password", host="localhost", port="5432"
 )
@@ -11,9 +10,7 @@ cur = conn.cursor()
 import os
 from datetime import datetime
 
-# Lista de los 250 IDs (Puedes extraerlos del endpoint de SteamSpy que trae el top)
-# Por ahora, un pequeño extracto de los principales
-# Dentro de tu ingest_batch.py, reemplaza la lista manual por esto:
+
 with open("top_games.txt", "r") as f:
     game_ids = [line.strip() for line in f.readlines()]
 

@@ -22,4 +22,4 @@ def get_top_ids(limit=200):
     print(f"Éxito: Se han guardado {len(top_games)} IDs en top_games.txt")
 
 if __name__ == "__main__":
-    get_top_ids(300)
+    get_top_ids(500)
